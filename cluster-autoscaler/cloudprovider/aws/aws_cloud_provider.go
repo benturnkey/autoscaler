@@ -23,6 +23,9 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
@@ -196,7 +199,15 @@ func (aws *awsCloudProvider) Refresh() error {
 
 // AwsRef contains a reference to some entity in AWS world.
 type AwsRef struct {
-	Name string
+	Name   string
+	Region string
+}
+
+func (r AwsRef) key() string {
+	if r.Region == "" {
+		return r.Name
+	}
+	return fmt.Sprintf("%s/%s", r.Region, r.Name)
 }
 
 // AwsInstanceRef contains a reference to an instance in the AWS world.
@@ -359,7 +370,7 @@ func (ng *AwsNodeGroup) ForceDeleteNodes(nodes []*apiv1.Node) error {
 
 // Id returns asg id.
 func (ng *AwsNodeGroup) Id() string {
-	return ng.asg.Name
+	return ng.asg.AwsRef.key()
 }
 
 // Debug returns a debug string for the Asg.
@@ -427,9 +438,18 @@ func BuildAWS(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupDis
 		defer cfg.Close()
 	}
 
-	sdkProvider, err := createAWSSDKProvider(cfg)
+	regions := normalizeAWSRegions(opts.AWSRegions)
+	defaultRegion := getRegion()
+	if len(regions) > 0 {
+		defaultRegion = regions[0]
+	}
+
+	sdkProvider, err := createAWSSDKProviderWithRegion(cfg, defaultRegion)
 	if err != nil {
 		klog.Fatalf("Failed to create AWS SDK Provider: %v", err)
+	}
+	if len(regions) == 0 {
+		regions = []string{sdkProvider.cfg.Region}
 	}
 
 	// Generate EC2 list
@@ -464,7 +484,8 @@ func BuildAWS(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupDis
 		klog.Infof("Successfully load %d EC2 Instance Types %s", len(keys), keys)
 	}
 
-	manager, err := CreateAwsManager(sdkProvider, do, instanceTypes)
+	serviceRouter, defaultService := buildAWSServiceRouter(sdkProvider, regions)
+	manager, err := createAWSManagerWithServiceRouter(serviceRouter, defaultService, do, instanceTypes)
 	if err != nil {
 		klog.Fatalf("Failed to create AWS Manager: %v", err)
 	}
@@ -475,4 +496,40 @@ func BuildAWS(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupDis
 	}
 	RegisterMetrics()
 	return provider
+}
+
+func normalizeAWSRegions(regions []string) []string {
+	normalized := make([]string, 0, len(regions))
+	seen := make(map[string]bool, len(regions))
+	for _, region := range regions {
+		trimmed := strings.TrimSpace(region)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		normalized = append(normalized, trimmed)
+	}
+	return normalized
+}
+
+func buildAWSServiceRouter(awsSDKProvider *awsSDKProvider, regions []string) (awsServiceRouter, *awsWrapper) {
+	services := make(map[string]*awsWrapper, len(regions))
+	for _, region := range regions {
+		cfg := awsSDKProvider.cfg
+		cfg.Region = region
+		services[region] = &awsWrapper{
+			autoScalingI: autoscaling.NewFromConfig(cfg, autoscaling.WithEndpointResolver(newAutoscalingOverrideResolver(awsSDKProvider.cloudConfig))),
+			ec2I:         ec2.NewFromConfig(cfg, ec2.WithEndpointResolver(newEc2OverrideResolver(awsSDKProvider.cloudConfig))),
+			eksI:         eks.NewFromConfig(cfg, eks.WithEndpointResolver(newEksOverrideResolver(awsSDKProvider.cloudConfig))),
+			region:       region,
+		}
+	}
+
+	defaultRegion := ""
+	var defaultService *awsWrapper
+	if len(regions) > 0 {
+		defaultRegion = regions[0]
+		defaultService = services[defaultRegion]
+	}
+	return newStaticAWSServiceRouter(defaultRegion, services), defaultService
 }

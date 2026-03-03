@@ -58,6 +58,7 @@ const (
 // AwsManager is handles aws communication and data caching.
 type AwsManager struct {
 	awsService            awsWrapper
+	awsServiceRouter      awsServiceRouter
 	asgCache              *asgCache
 	lastRefresh           time.Time
 	instanceTypes         map[string]*InstanceType
@@ -85,6 +86,7 @@ func createAWSManagerInternal(
 			autoScalingI: autoscaling.NewFromConfig(awsSDKProvider.cfg, autoscaling.WithEndpointResolver(newAutoscalingOverrideResolver(awsSDKProvider.cloudConfig))),
 			ec2I:         ec2.NewFromConfig(awsSDKProvider.cfg, ec2.WithEndpointResolver(newEc2OverrideResolver(awsSDKProvider.cloudConfig))),
 			eksI:         eks.NewFromConfig(awsSDKProvider.cfg, eks.WithEndpointResolver(newEksOverrideResolver(awsSDKProvider.cloudConfig))),
+			region:       awsSDKProvider.cfg.Region,
 		}
 	}
 
@@ -97,14 +99,59 @@ func createAWSManagerInternal(
 	if err != nil {
 		return nil, err
 	}
+	defaultRegion := ""
+	if awsSDKProvider != nil {
+		defaultRegion = awsSDKProvider.cfg.Region
+	}
+	serviceRouter := newSingleAWSServiceRouter(defaultRegion, awsService)
+	cache.awsServiceRouter = serviceRouter
 
 	mngCache := newManagedNodeGroupCache(awsService)
+	mngCache.awsServiceRouter = serviceRouter
 
 	manager := &AwsManager{
 		awsService:            *awsService,
+		awsServiceRouter:      serviceRouter,
 		asgCache:              cache,
 		instanceTypes:         instanceTypes,
 		managedNodegroupCache: mngCache,
+	}
+
+	if err := manager.forceRefresh(); err != nil {
+		return nil, err
+	}
+
+	return manager, nil
+}
+
+func createAWSManagerWithServiceRouter(
+	serviceRouter awsServiceRouter,
+	defaultService *awsWrapper,
+	discoveryOpts cloudprovider.NodeGroupDiscoveryOptions,
+	instanceTypes map[string]*InstanceType,
+) (*AwsManager, error) {
+	specs, err := parseASGAutoDiscoverySpecs(discoveryOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	cache, err := newASGCache(defaultService, discoveryOpts.NodeGroupSpecs, specs)
+	if err != nil {
+		return nil, err
+	}
+	cache.awsServiceRouter = serviceRouter
+
+	mngCache := newManagedNodeGroupCache(defaultService)
+	mngCache.awsServiceRouter = serviceRouter
+
+	manager := &AwsManager{
+		asgCache:              cache,
+		awsServiceRouter:      serviceRouter,
+		instanceTypes:         instanceTypes,
+		managedNodegroupCache: mngCache,
+	}
+	if defaultService != nil {
+		manager.awsService = *defaultService
 	}
 
 	if err := manager.forceRefresh(); err != nil {
@@ -308,7 +355,7 @@ func (m *AwsManager) buildNodeFromTemplate(asg *asg, template *asgTemplate) (*ap
 		klog.V(5).Infof("Nodegroup %s in cluster %s is an EKS managed nodegroup.", nodegroupName, clusterName)
 
 		// Call AWS EKS DescribeNodegroup API, check if keys already exist in Labels and do NOT overwrite
-		mngLabels, err := m.managedNodegroupCache.getManagedNodegroupLabels(nodegroupName, clusterName)
+		mngLabels, err := m.managedNodegroupCache.getManagedNodegroupLabelsForRegion(nodegroupName, clusterName, template.Region)
 		if err != nil {
 			klog.Errorf("Failed to get labels from EKS DescribeNodegroup API for nodegroup %s in cluster %s because %s.", nodegroupName, clusterName, err)
 		} else if mngLabels != nil && len(mngLabels) > 0 {
@@ -316,7 +363,7 @@ func (m *AwsManager) buildNodeFromTemplate(asg *asg, template *asgTemplate) (*ap
 			klog.V(5).Infof("node.Labels : %+v\n", node.Labels)
 		}
 
-		mngTaints, err := m.managedNodegroupCache.getManagedNodegroupTaints(nodegroupName, clusterName)
+		mngTaints, err := m.managedNodegroupCache.getManagedNodegroupTaintsForRegion(nodegroupName, clusterName, template.Region)
 		if err != nil {
 			klog.Errorf("Failed to get taints from EKS DescribeNodegroup API for nodegroup %s in cluster %s because %s.", nodegroupName, clusterName, err)
 		} else if mngTaints != nil && len(mngTaints) > 0 {
@@ -324,7 +371,7 @@ func (m *AwsManager) buildNodeFromTemplate(asg *asg, template *asgTemplate) (*ap
 			klog.V(5).Infof("node.Spec.Taints : %+v\n", node.Spec.Taints)
 		}
 
-		mngTags, err := m.managedNodegroupCache.getManagedNodegroupTags(nodegroupName, clusterName)
+		mngTags, err := m.managedNodegroupCache.getManagedNodegroupTagsForRegion(nodegroupName, clusterName, template.Region)
 		if err != nil {
 			klog.Errorf("Failed to get tags from EKS DescribeNodegroup API for nodegroup %s in cluster %s because %s.", nodegroupName, clusterName, err)
 		} else if mngTags != nil && len(mngTags) > 0 {

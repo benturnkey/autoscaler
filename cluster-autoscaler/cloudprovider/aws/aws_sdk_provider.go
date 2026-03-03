@@ -46,6 +46,10 @@ import (
 //
 // t.Setenv("AWS_REGION", "fanghorn")
 func createAWSSDKProvider(configReader io.Reader) (*awsSDKProvider, error) {
+	return createAWSSDKProviderWithRegion(configReader, getRegion())
+}
+
+func createAWSSDKProviderWithRegion(configReader io.Reader, region string) (*awsSDKProvider, error) {
 	cloudConfig, err := readAWSCloudConfig(configReader)
 	if err != nil {
 		klog.Errorf("Couldn't read config: %v", err)
@@ -59,7 +63,7 @@ func createAWSSDKProvider(configReader io.Reader) (*awsSDKProvider, error) {
 
 	// Configure all options before building the config
 	loadOpts := []func(*config.LoadOptions) error{
-		config.WithRegion(getRegion()),
+		config.WithRegion(region),
 		config.WithAPIOptions([]func(*smithymiddleware.Stack) error{
 			// add cluster-autoscaler to the user-agent to make it easier to identify
 			middleware.AddUserAgentKeyValue("cluster-autoscaler", version.ClusterAutoscalerVersion),

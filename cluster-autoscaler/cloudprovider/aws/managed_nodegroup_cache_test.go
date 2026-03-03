@@ -86,7 +86,7 @@ func TestGetManagedNodegroupWithError(t *testing.T) {
 		},
 	).Return(nil, errors.New("AccessDenied"))
 
-	c := newManagedNodeGroupCache(&awsWrapper{nil, nil, k})
+	c := newManagedNodeGroupCache(&awsWrapper{eksI: k})
 
 	// Make sure there's an error but no cache object returned
 	_, err := c.getManagedNodegroup(nodegroupName, clusterName)
@@ -132,7 +132,7 @@ func TestGetManagedNodegroupNoTaintsOrLabels(t *testing.T) {
 		},
 	).Return(&eks.DescribeNodegroupOutput{Nodegroup: &testNodegroup}, nil)
 
-	c := newManagedNodeGroupCache(&awsWrapper{nil, nil, k})
+	c := newManagedNodeGroupCache(&awsWrapper{eksI: k})
 
 	cacheObj, err := c.getManagedNodegroup(nodegroupName, clusterName)
 	require.NoError(t, err)
@@ -208,7 +208,7 @@ func TestGetManagedNodegroupWithTaintsAndLabels(t *testing.T) {
 		},
 	).Return(&eks.DescribeNodegroupOutput{Nodegroup: &testNodegroup}, nil)
 
-	c := newManagedNodeGroupCache(&awsWrapper{nil, nil, k})
+	c := newManagedNodeGroupCache(&awsWrapper{eksI: k})
 
 	cacheObj, err := c.getManagedNodegroup(nodegroupName, clusterName)
 	require.NoError(t, err)
@@ -248,7 +248,7 @@ func TestGetManagedNodegroupInfoObjectWithError(t *testing.T) {
 		},
 	).Return(nil, errors.New("AccessDenied"))
 
-	c := newManagedNodeGroupCache(&awsWrapper{nil, nil, k})
+	c := newManagedNodeGroupCache(&awsWrapper{eksI: k})
 
 	// Make sure there's an error
 	mngInfoObject, err := c.getManagedNodegroupInfoObject(nodegroupName, clusterName)
@@ -276,7 +276,7 @@ func TestGetManagedNodegroupInfoObjectWithCachedNodegroup(t *testing.T) {
 	tagKey := "tag key 1"
 	tagValue := "tag value 1"
 
-	c := newManagedNodeGroupCache(&awsWrapper{nil, nil, k})
+	c := newManagedNodeGroupCache(&awsWrapper{eksI: k})
 	err := c.Add(managedNodegroupCachedObject{
 		name:        nodegroupName,
 		clusterName: clusterName,
@@ -339,7 +339,7 @@ func TestGetManagedNodegroupInfoObjectNoCachedNodegroup(t *testing.T) {
 		},
 	).Return(&eks.DescribeNodegroupOutput{Nodegroup: &testNodegroup}, nil)
 
-	c := newManagedNodeGroupCache(&awsWrapper{nil, nil, k})
+	c := newManagedNodeGroupCache(&awsWrapper{eksI: k})
 
 	mngInfoObject, err := c.getManagedNodegroupInfoObject(nodegroupName, clusterName)
 	require.NoError(t, err)
@@ -381,7 +381,7 @@ func TestGetManagedNodegroupLabelsWithCachedNodegroup(t *testing.T) {
 	tagKey := "tag key 1"
 	tagValue := "tag value 1"
 
-	c := newManagedNodeGroupCache(&awsWrapper{nil, nil, k})
+	c := newManagedNodeGroupCache(&awsWrapper{eksI: k})
 	err := c.Add(managedNodegroupCachedObject{
 		name:        nodegroupName,
 		clusterName: clusterName,
@@ -438,7 +438,7 @@ func TestGetManagedNodegroupLabelsNoCachedNodegroup(t *testing.T) {
 		},
 	).Return(&eks.DescribeNodegroupOutput{Nodegroup: &testNodegroup}, nil)
 
-	c := newManagedNodeGroupCache(&awsWrapper{nil, nil, k})
+	c := newManagedNodeGroupCache(&awsWrapper{eksI: k})
 
 	labelsMap, err := c.getManagedNodegroupLabels(nodegroupName, clusterName)
 	require.NoError(t, err)
@@ -509,7 +509,7 @@ func TestGetManagedNodegroupLabelsWithCachedNodegroupThatExpires(t *testing.T) {
 	)
 
 	// Create cache with fake clock
-	c := newManagedNodeGroupCacheWithClock(&awsWrapper{nil, nil, k}, fakeClock, fakeStore)
+	c := newManagedNodeGroupCacheWithClock(&awsWrapper{eksI: k}, fakeClock, fakeStore)
 
 	// Add nodegroup entry that will expire
 	err := c.Add(managedNodegroupCachedObject{
@@ -580,7 +580,7 @@ func TestGetManagedNodegroupTaintsWithCachedNodegroup(t *testing.T) {
 		Value:  taintValue,
 	}
 
-	c := newManagedNodeGroupCache(&awsWrapper{nil, nil, k})
+	c := newManagedNodeGroupCache(&awsWrapper{eksI: k})
 	err := c.Add(managedNodegroupCachedObject{
 		name:        nodegroupName,
 		clusterName: clusterName,
@@ -653,7 +653,7 @@ func TestGetManagedNodegroupTaintsNoCachedNodegroup(t *testing.T) {
 		},
 	).Return(&eks.DescribeNodegroupOutput{Nodegroup: &testNodegroup}, nil)
 
-	c := newManagedNodeGroupCache(&awsWrapper{nil, nil, k})
+	c := newManagedNodeGroupCache(&awsWrapper{eksI: k})
 
 	taintsList, err := c.getManagedNodegroupTaints(nodegroupName, clusterName)
 	require.NoError(t, err)
@@ -691,7 +691,7 @@ func TestGetManagedNodegroupTagsWithCachedNodegroup(t *testing.T) {
 	tagKey := "tag key 1"
 	tagValue := "tag value 1"
 
-	c := newManagedNodeGroupCache(&awsWrapper{nil, nil, k})
+	c := newManagedNodeGroupCache(&awsWrapper{eksI: k})
 	err := c.Add(managedNodegroupCachedObject{
 		name:        nodegroupName,
 		clusterName: clusterName,
@@ -766,7 +766,7 @@ func TestGetManagedNodegroupTagsNoCachedNodegroup(t *testing.T) {
 		},
 	).Return(&eks.DescribeNodegroupOutput{Nodegroup: &testNodegroup}, nil)
 
-	c := newManagedNodeGroupCache(&awsWrapper{nil, nil, k})
+	c := newManagedNodeGroupCache(&awsWrapper{eksI: k})
 
 	tagsMap, err := c.getManagedNodegroupTags(nodegroupName, clusterName)
 	require.NoError(t, err)

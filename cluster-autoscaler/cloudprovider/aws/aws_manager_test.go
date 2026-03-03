@@ -682,7 +682,7 @@ func TestFetchExplicitAsgs(t *testing.T) {
 	}
 	t.Setenv("AWS_REGION", "fanghorn")
 	instanceTypes, _ := GetStaticEC2InstanceTypes()
-	m, err := createAWSManagerInternal(nil, do, &awsWrapper{a, nil, nil}, instanceTypes)
+	m, err := createAWSManagerInternal(nil, do, &awsWrapper{autoScalingI: a}, instanceTypes)
 	assert.NoError(t, err)
 
 	asgs := m.asgCache.Get()
@@ -745,7 +745,7 @@ func TestGetASGTemplate(t *testing.T) {
 			instanceTypes, _ := GetStaticEC2InstanceTypes()
 			do := cloudprovider.NodeGroupDiscoveryOptions{}
 
-			m, err := createAWSManagerInternal(nil, do, &awsWrapper{nil, e, nil}, instanceTypes)
+			m, err := createAWSManagerInternal(nil, do, &awsWrapper{ec2I: e}, instanceTypes)
 			origGetInstanceTypeFunc := getInstanceTypeForAsg
 			defer func() { getInstanceTypeForAsg = origGetInstanceTypeFunc }()
 			getInstanceTypeForAsg = func(m *asgCache, asg *asg) (string, error) {
@@ -841,7 +841,7 @@ func TestFetchAutoAsgs(t *testing.T) {
 	t.Setenv("AWS_REGION", "fanghorn")
 	// fetchAutoASGs is called at manager creation time, via forceRefresh
 	instanceTypes, _ := GetStaticEC2InstanceTypes()
-	m, err := createAWSManagerInternal(nil, do, &awsWrapper{a, nil, nil}, instanceTypes)
+	m, err := createAWSManagerInternal(nil, do, &awsWrapper{autoScalingI: a}, instanceTypes)
 	assert.NoError(t, err)
 
 	asgs := m.asgCache.Get()
@@ -861,6 +861,78 @@ func TestFetchAutoAsgs(t *testing.T) {
 	err = m.asgCache.regenerate()
 	assert.NoError(t, err)
 	assert.Empty(t, m.asgCache.Get())
+}
+
+func TestCreateAWSManagerWithServiceRouterAcrossRegions(t *testing.T) {
+	regions := []string{"us-east-1", "us-west-2"}
+	serviceRouter, mocks := newTestRegionalAWSService(regions...)
+	defaultService, err := serviceRouter.forRegion(regions[0])
+	require.NoError(t, err)
+
+	input := &autoscaling.DescribeAutoScalingGroupsInput{
+		Filters: []autoscalingtypes.Filter{
+			{Name: aws.String("tag-key"), Values: []string{"test"}},
+		},
+		MaxRecords: aws.Int32(maxRecordsReturnedByAPI),
+	}
+	mocks.AutoScaling["us-east-1"].On("DescribeAutoScalingGroups", mock.Anything, input).
+		Return(testRegionalDescribeAutoScalingGroupsOutput("shared-asg", "us-east-1", 1, "i-east"), nil)
+	mocks.AutoScaling["us-west-2"].On("DescribeAutoScalingGroups", mock.Anything, input).
+		Return(testRegionalDescribeAutoScalingGroupsOutput("shared-asg", "us-west-2", 1, "i-west"), nil)
+
+	instanceTypes, _ := GetStaticEC2InstanceTypes()
+	manager, err := createAWSManagerWithServiceRouter(
+		serviceRouter,
+		defaultService,
+		cloudprovider.NodeGroupDiscoveryOptions{
+			NodeGroupAutoDiscoverySpecs: []string{"asg:tag=test"},
+		},
+		instanceTypes,
+	)
+	require.NoError(t, err)
+
+	asgs := manager.getAsgs()
+	require.Len(t, asgs, 2)
+	_, eastFound := asgs[AwsRef{Name: "shared-asg", Region: "us-east-1"}]
+	_, westFound := asgs[AwsRef{Name: "shared-asg", Region: "us-west-2"}]
+	assert.True(t, eastFound)
+	assert.True(t, westFound)
+}
+
+func TestCreateAWSManagerWithServiceRouterRoutesSetAsgSize(t *testing.T) {
+	regions := []string{"us-east-1", "us-west-2"}
+	serviceRouter, mocks := newTestRegionalAWSService(regions...)
+	defaultService, err := serviceRouter.forRegion(regions[0])
+	require.NoError(t, err)
+
+	instanceTypes, _ := GetStaticEC2InstanceTypes()
+	manager, err := createAWSManagerWithServiceRouter(
+		serviceRouter,
+		defaultService,
+		cloudprovider.NodeGroupDiscoveryOptions{},
+		instanceTypes,
+	)
+	require.NoError(t, err)
+
+	testAsg := &asg{
+		AwsRef:  AwsRef{Name: "west-asg", Region: "us-west-2"},
+		curSize: 1,
+		region:  "us-west-2",
+	}
+	mocks.AutoScaling["us-west-2"].On(
+		"SetDesiredCapacity",
+		mock.Anything,
+		&autoscaling.SetDesiredCapacityInput{
+			AutoScalingGroupName: aws.String("west-asg"),
+			DesiredCapacity:      aws.Int32(3),
+			HonorCooldown:        aws.Bool(false),
+		},
+	).Return(&autoscaling.SetDesiredCapacityOutput{}, nil)
+
+	require.NoError(t, manager.SetAsgSize(testAsg, 3))
+	assert.Equal(t, 3, testAsg.curSize)
+	mocks.AutoScaling["us-west-2"].AssertNumberOfCalls(t, "SetDesiredCapacity", 1)
+	mocks.AutoScaling["us-east-1"].AssertNumberOfCalls(t, "SetDesiredCapacity", 0)
 }
 
 type ServiceDescriptor struct {

@@ -97,7 +97,7 @@ func (es instanceTypeExpirationStore) populate(autoscalingGroups map[AwsRef]*asg
 		if asg == nil {
 			continue
 		}
-		_, found, _ := es.GetByKey(asg.AwsRef.Name)
+		_, found, _ := es.GetByKey(asg.AwsRef.key())
 		if found {
 			continue
 		}

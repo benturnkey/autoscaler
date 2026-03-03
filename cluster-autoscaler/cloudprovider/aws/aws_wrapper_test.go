@@ -107,7 +107,7 @@ func (k *eksMock) DescribeNodegroup(ctx context.Context, i *eks.DescribeNodegrou
 	}
 }
 
-var testAwsService = awsWrapper{&autoScalingMock{}, &ec2Mock{}, &eksMock{}}
+var testAwsService = awsWrapper{autoScalingI: &autoScalingMock{}, ec2I: &ec2Mock{}, eksI: &eksMock{}}
 
 func TestGetManagedNodegroup(t *testing.T) {
 	k := &eksMock{}
