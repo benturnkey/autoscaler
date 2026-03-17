@@ -21,10 +21,12 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	sdkaws "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
@@ -43,7 +45,7 @@ var testAwsManager = &AwsManager{
 }
 
 func newTestAwsManagerWithMockServices(mockAutoScaling autoScalingI, mockEC2 ec2I, mockEKS eksI, autoDiscoverySpecs []asgAutoDiscoveryConfig, instanceStatus map[AwsInstanceRef]*string) *AwsManager {
-	awsService := awsWrapper{mockAutoScaling, mockEC2, mockEKS}
+	awsService := awsWrapper{autoScalingI: mockAutoScaling, ec2I: mockEC2, eksI: mockEKS}
 	mgr := &AwsManager{
 		awsService: awsService,
 		asgCache: &asgCache{
@@ -126,6 +128,29 @@ func TestBuildAwsCloudProvider(t *testing.T) {
 
 	_, err := BuildAwsCloudProvider(testAwsManager, resourceLimiter)
 	assert.NoError(t, err)
+}
+
+func TestNormalizeAWSRegions(t *testing.T) {
+	assert.Equal(t, []string{"us-east-1", "us-west-2"}, normalizeAWSRegions([]string{" us-east-1 ", "", "us-west-2", "us-east-1"}))
+	assert.Empty(t, normalizeAWSRegions([]string{"", "  "}))
+}
+
+func TestBuildAWSServiceRouter(t *testing.T) {
+	router, defaultService := buildAWSServiceRouter(&awsSDKProvider{
+		cfg: sdkaws.Config{Region: "us-east-1"},
+	}, []string{"us-east-1", "us-west-2"})
+
+	require.NotNil(t, defaultService)
+	require.Equal(t, []string{"us-east-1", "us-west-2"}, router.regions())
+
+	eastService, err := router.forRegion("us-east-1")
+	require.NoError(t, err)
+	assert.Same(t, defaultService, eastService)
+
+	westService, err := router.forRegion("us-west-2")
+	require.NoError(t, err)
+	assert.NotNil(t, westService)
+	assert.NotSame(t, eastService, westService)
 }
 
 func TestInstanceTypeFallback(t *testing.T) {

@@ -37,7 +37,7 @@ var (
 			Name:      "aws_request_duration_seconds",
 			Help:      "Time taken by AWS requests, by method and status code, in seconds",
 			Buckets:   []float64{0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0},
-		}, []string{"endpoint", "status"},
+		}, []string{"endpoint", "status", "region"},
 	)
 )
 
@@ -47,7 +47,7 @@ func RegisterMetrics() {
 }
 
 // observeAWSRequest records AWS API calls counts and durations
-func observeAWSRequest(endpoint string, err error, start time.Time) {
+func observeAWSRequest(endpoint string, err error, start time.Time, region string) {
 	duration := time.Since(start).Seconds()
 	status := "success"
 
@@ -61,5 +61,5 @@ func observeAWSRequest(endpoint string, err error, start time.Time) {
 		}
 	}
 
-	requestSummary.WithLabelValues(endpoint, status).Observe(duration)
+	requestSummary.WithLabelValues(endpoint, status, region).Observe(duration)
 }

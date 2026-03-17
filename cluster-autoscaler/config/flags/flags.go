@@ -170,6 +170,7 @@ var (
 	balancingIgnoreLabelsFlag = multiStringFlag("balancing-ignore-label", "Specifies a label to ignore in addition to the basic and cloud-provider set of labels when comparing if two node groups are similar")
 	balancingLabelsFlag       = multiStringFlag("balancing-label", "Specifies a label to use for comparing if two node groups are similar, rather than the built in heuristics. Setting this flag disables all other comparison logic, and cannot be combined with --balancing-ignore-label.")
 	awsUseStaticInstanceList  = flag.Bool("aws-use-static-instance-list", false, "Should CA fetch instance types in runtime or use a static list. AWS only")
+	awsRegionsFlag            = multiStringFlag("aws-region", "AWS region to query for ASG discovery. Can be passed multiple times. If omitted, CA uses the default AWS region.")
 	scaleFromUnschedulable    = flag.Bool("scale-from-unschedulable", false, "Specifies that the CA should ignore a node's .spec.unschedulable field in node templates when considering to scale a node group.")
 
 	// GCE specific flags
@@ -378,6 +379,7 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 		},
 		NodeDeletionDelayTimeout: *nodeDeletionDelayTimeout,
 		AWSUseStaticInstanceList: *awsUseStaticInstanceList,
+		AWSRegions:               append([]string(nil), (*awsRegionsFlag)...),
 		ScaleFromUnschedulable:   *scaleFromUnschedulable,
 		GCEOptions: config.GCEOptions{
 			ConcurrentRefreshes:            *concurrentGceRefreshes,

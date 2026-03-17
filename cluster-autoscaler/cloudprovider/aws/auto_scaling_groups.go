@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +48,7 @@ type asgCache struct {
 	asgInstanceTypeCache *instanceTypeExpirationStore
 	mutex                sync.Mutex
 	awsService           *awsWrapper
+	awsServiceRouter     awsServiceRouter
 	interrupt            chan struct{}
 
 	asgAutoDiscoverySpecs []asgAutoDiscoveryConfig
@@ -64,6 +66,7 @@ type mixedInstancesPolicy struct {
 	instanceTypesOverrides        []string
 	instanceRequirementsOverrides *autoscalingtypes.InstanceRequirements
 	instanceRequirements          *ec2types.InstanceRequirements
+	region                        string
 }
 
 type asg struct {
@@ -79,12 +82,14 @@ type asg struct {
 	LaunchTemplate          *launchTemplate
 	MixedInstancesPolicy    *mixedInstancesPolicy
 	Tags                    []autoscalingtypes.TagDescription
+	region                  string
 }
 
 func newASGCache(awsService *awsWrapper, explicitSpecs []string, autoDiscoverySpecs []asgAutoDiscoveryConfig) (*asgCache, error) {
 	registry := &asgCache{
 		registeredAsgs:        make(map[AwsRef]*asg, 0),
 		awsService:            awsService,
+		awsServiceRouter:      nil,
 		asgToInstances:        make(map[AwsRef][]AwsInstanceRef),
 		instanceToAsg:         make(map[AwsInstanceRef]*asg),
 		instanceStatus:        make(map[AwsInstanceRef]*string),
@@ -103,18 +108,65 @@ func newASGCache(awsService *awsWrapper, explicitSpecs []string, autoDiscoverySp
 	return registry, nil
 }
 
+func (m *asgCache) getAWSServiceForRegion(region string) (*awsWrapper, error) {
+	if m.awsServiceRouter != nil {
+		return m.awsServiceRouter.forRegion(region)
+	}
+	if m.awsService == nil {
+		return nil, fmt.Errorf("no AWS service configured")
+	}
+	return m.awsService, nil
+}
+
+func (m *asgCache) getAWSServiceForASG(asg *asg) (*awsWrapper, error) {
+	if asg == nil {
+		return nil, fmt.Errorf("no ASG provided")
+	}
+	return m.getAWSServiceForRegion(asg.region)
+}
+
+func (m *asgCache) regionsForRefresh() []string {
+	if m.awsServiceRouter == nil {
+		return []string{""}
+	}
+	regions := append([]string(nil), m.awsServiceRouter.regions()...)
+	if len(regions) == 0 {
+		return []string{""}
+	}
+	sort.Strings(regions)
+	return regions
+}
+
+func (m *asgCache) useRegionQualifiedRefs() bool {
+	if m.awsServiceRouter == nil {
+		return false
+	}
+	return len(m.awsServiceRouter.regions()) > 1
+}
+
+func (m *asgCache) asgRef(name string, region string) AwsRef {
+	if !m.useRegionQualifiedRefs() {
+		return AwsRef{Name: name}
+	}
+	return AwsRef{Name: name, Region: region}
+}
+
 // Use a function variable for ease of testing
 var getInstanceTypeForAsg = func(m *asgCache, group *asg) (string, error) {
-	if obj, found, _ := m.asgInstanceTypeCache.GetByKey(group.AwsRef.Name); found {
+	if obj, found, _ := m.asgInstanceTypeCache.GetByKey(group.AwsRef.key()); found {
 		return obj.(instanceTypeCachedObject).instanceType, nil
 	}
 
-	result, err := m.awsService.getInstanceTypesForAsgs([]*asg{group})
+	awsService, err := m.getAWSServiceForASG(group)
+	if err != nil {
+		return "", fmt.Errorf("could not get service for %s: %w", group.AwsRef.Name, err)
+	}
+	result, err := awsService.getInstanceTypesForAsgs([]*asg{group})
 	if err != nil {
 		return "", fmt.Errorf("could not get instance type for %s: %w", group.AwsRef.Name, err)
 	}
 
-	if instanceType, ok := result[group.AwsRef.Name]; ok {
+	if instanceType, ok := result[group.AwsRef.key()]; ok {
 		return instanceType, nil
 	}
 
@@ -268,8 +320,12 @@ func (m *asgCache) setAsgSizeNoLock(asg *asg, size int) error {
 	}
 	klog.V(0).Infof("Setting asg %s size to %d", asg.Name, size)
 	start := time.Now()
-	_, err := m.awsService.SetDesiredCapacity(context.Background(), params)
-	observeAWSRequest("SetDesiredCapacity", err, start)
+	awsService, err := m.getAWSServiceForASG(asg)
+	if err != nil {
+		return err
+	}
+	_, err = awsService.SetDesiredCapacity(context.Background(), params)
+	observeAWSRequest("SetDesiredCapacity", err, start, asg.region)
 	if err != nil {
 		return err
 	}
@@ -318,7 +374,11 @@ func (m *asgCache) DeleteInstances(instances []*AwsInstanceRef) error {
 			placeHolderInstancesCount, commonAsg.Name)
 
 		asgNames := []string{commonAsg.Name}
-		asgDetail, err := m.awsService.getAutoscalingGroupsByNames(asgNames)
+		awsService, err := m.getAWSServiceForASG(commonAsg)
+		if err != nil {
+			return err
+		}
+		asgDetail, err := awsService.getAutoscalingGroupsByNames(asgNames)
 
 		if err != nil {
 			klog.Errorf("Error retrieving ASG details %s: %v", commonAsg.Name, err)
@@ -371,8 +431,12 @@ func (m *asgCache) DeleteInstances(instances []*AwsInstanceRef) error {
 			ShouldDecrementDesiredCapacity: aws.Bool(true),
 		}
 		start := time.Now()
-		resp, err := m.awsService.TerminateInstanceInAutoScalingGroup(context.Background(), params)
-		observeAWSRequest("TerminateInstanceInAutoScalingGroup", err, start)
+		awsService, err := m.getAWSServiceForASG(commonAsg)
+		if err != nil {
+			return err
+		}
+		resp, err := awsService.TerminateInstanceInAutoScalingGroup(context.Background(), params)
+		observeAWSRequest("TerminateInstanceInAutoScalingGroup", err, start, commonAsg.region)
 		if err != nil {
 			return err
 		}
@@ -424,22 +488,31 @@ func (m *asgCache) regenerate() error {
 	newInstanceStatusMap := make(map[AwsInstanceRef]*string)
 	newInstanceLifecycleMap := make(map[AwsInstanceRef]autoscalingtypes.LifecycleState)
 
-	// Fetch details of all ASGs
+	// Fetch details of all ASGs.
 	refreshNames := m.buildAsgNames()
-	klog.V(4).Infof("Regenerating instance to ASG map for ASG names: %v", refreshNames)
-	namedGroups, err := m.awsService.getAutoscalingGroupsByNames(refreshNames)
-	if err != nil {
-		return err
-	}
-
 	refreshTags := m.buildAsgTags()
-	klog.V(4).Infof("Regenerating instance to ASG map for ASG tags: %v", refreshTags)
-	taggedGroups, err := m.awsService.getAutoscalingGroupsByTags(refreshTags)
-	if err != nil {
-		return err
-	}
+	groups := make([]autoscalingtypes.AutoScalingGroup, 0)
+	for _, region := range m.regionsForRefresh() {
+		awsService, err := m.getAWSServiceForRegion(region)
+		if err != nil {
+			return err
+		}
 
-	groups := append(namedGroups, taggedGroups...)
+		klog.V(4).Infof("Regenerating instance to ASG map for region %q and ASG names: %v", region, refreshNames)
+		namedGroups, err := awsService.getAutoscalingGroupsByNames(refreshNames)
+		if err != nil {
+			return err
+		}
+
+		klog.V(4).Infof("Regenerating instance to ASG map for region %q and ASG tags: %v", region, refreshTags)
+		taggedGroups, err := awsService.getAutoscalingGroupsByTags(refreshTags)
+		if err != nil {
+			return err
+		}
+
+		groups = append(groups, namedGroups...)
+		groups = append(groups, taggedGroups...)
+	}
 
 	// If currently any ASG has more Desired than running Instances, introduce placeholders
 	// for the instances to come up. This is required to track Desired instances that
@@ -475,8 +548,7 @@ func (m *asgCache) regenerate() error {
 		}
 	}
 
-	err = m.asgInstanceTypeCache.populate(m.registeredAsgs)
-	if err != nil {
+	if err := m.asgInstanceTypeCache.populate(m.registeredAsgs); err != nil {
 		klog.Warningf("Failed to fully populate ASG->instanceType mapping: %v", err)
 	}
 
@@ -539,14 +611,22 @@ func (m *asgCache) isNodeGroupAvailable(group *autoscalingtypes.AutoScalingGroup
 	}
 
 	start := time.Now()
-	response, err := m.awsService.DescribeScalingActivities(context.Background(), input)
-	observeAWSRequest("DescribeScalingActivities", err, start)
+	region := ""
+	if len(group.AvailabilityZones) > 0 && len(group.AvailabilityZones[0]) > 1 {
+		region = group.AvailabilityZones[0][:len(group.AvailabilityZones[0])-1]
+	}
+	awsService, err := m.getAWSServiceForRegion(region)
+	if err != nil {
+		return true, err
+	}
+	response, err := awsService.DescribeScalingActivities(context.Background(), input)
+	observeAWSRequest("DescribeScalingActivities", err, start, region)
 	if err != nil {
 		return true, err // If we can't describe the scaling activities we assume the node group is available
 	}
 
 	for _, activity := range response.Activities {
-		asgRef := AwsRef{Name: *group.AutoScalingGroupName}
+		asgRef := m.asgRef(*group.AutoScalingGroupName, region)
 		if a, ok := m.registeredAsgs[asgRef]; ok {
 			lut := a.lastUpdateTime
 			if activity.StartTime.Before(lut) {
@@ -574,8 +654,13 @@ func (m *asgCache) buildAsgFromAWS(g *autoscalingtypes.AutoScalingGroup) (*asg, 
 		return nil, fmt.Errorf("failed to create node group spec: %v", verr)
 	}
 
+	region := ""
+	if len(g.AvailabilityZones) > 0 && len(g.AvailabilityZones[0]) > 1 {
+		region = g.AvailabilityZones[0][:len(g.AvailabilityZones[0])-1]
+	}
+
 	asg := &asg{
-		AwsRef:  AwsRef{Name: spec.Name},
+		AwsRef:  m.asgRef(spec.Name, region),
 		minSize: spec.MinSize,
 		maxSize: spec.MaxSize,
 
@@ -583,6 +668,7 @@ func (m *asgCache) buildAsgFromAWS(g *autoscalingtypes.AutoScalingGroup) (*asg, 
 		AvailabilityZones:       g.AvailabilityZones,
 		LaunchConfigurationName: aws.ToString(g.LaunchConfigurationName),
 		Tags:                    g.Tags,
+		region:                  region,
 	}
 
 	if g.LaunchTemplate != nil {
@@ -611,6 +697,7 @@ func (m *asgCache) buildAsgFromAWS(g *autoscalingtypes.AutoScalingGroup) (*asg, 
 			launchTemplate:                buildLaunchTemplateFromSpec(g.MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification),
 			instanceTypesOverrides:        getInstanceTypes(g.MixedInstancesPolicy.LaunchTemplate.Overrides),
 			instanceRequirementsOverrides: getInstanceTypeRequirements(g.MixedInstancesPolicy.LaunchTemplate.Overrides),
+			region:                        region,
 		}
 
 		if len(asg.MixedInstancesPolicy.instanceTypesOverrides) == 0 {
@@ -631,14 +718,17 @@ func (m *asgCache) buildAsgFromAWS(g *autoscalingtypes.AutoScalingGroup) (*asg, 
 
 func (m *asgCache) getInstanceRequirementsFromMixedInstancesPolicy(policy *mixedInstancesPolicy) (*ec2types.InstanceRequirements, error) {
 	instanceRequirements := &ec2types.InstanceRequirements{}
+	awsService, err := m.getAWSServiceForRegion(policy.region)
+	if err != nil {
+		return nil, err
+	}
 	if policy.instanceRequirementsOverrides != nil {
-		var err error
-		instanceRequirements, err = m.awsService.getEC2RequirementsFromAutoscaling(policy.instanceRequirementsOverrides)
+		instanceRequirements, err = awsService.getEC2RequirementsFromAutoscaling(policy.instanceRequirementsOverrides)
 		if err != nil {
 			return nil, err
 		}
 	} else if policy.launchTemplate != nil {
-		templateData, err := m.awsService.getLaunchTemplateData(policy.launchTemplate.name, policy.launchTemplate.version)
+		templateData, err := awsService.getLaunchTemplateData(policy.launchTemplate.name, policy.launchTemplate.version)
 		if err != nil {
 			return nil, err
 		}

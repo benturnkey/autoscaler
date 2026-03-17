@@ -235,6 +235,8 @@ type AutoscalingOptions struct {
 	BalancingLabels []string
 	// AWSUseStaticInstanceList tells if AWS cloud provider use static instance type list or dynamically fetch from remote APIs.
 	AWSUseStaticInstanceList bool
+	// AWSRegions contains the list of AWS regions to query for ASG discovery. If empty, CA falls back to the default AWS region.
+	AWSRegions []string
 	// ScaleFromUnschedulable tells the autoscaler to ignore a node's .spec.unschedulable field when creating a node template.
 	// Specifically, this will cause the autoscaler to set the node template's .spec.unschedulable field to false.
 	ScaleFromUnschedulable bool

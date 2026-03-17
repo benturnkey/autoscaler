@@ -83,7 +83,7 @@ func TestLTVersionChange(t *testing.T) {
 		},
 		fakeClock,
 	)
-	m := newAsgInstanceTypeCacheWithClock(&awsWrapper{a, e, nil}, fakeClock, fakeStore)
+	m := newAsgInstanceTypeCacheWithClock(&awsWrapper{autoScalingI: a, ec2I: e}, fakeClock, fakeStore)
 
 	for i := 0; i < 2; i++ {
 		asgRef := AwsRef{Name: asgName}

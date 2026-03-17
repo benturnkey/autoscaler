@@ -66,6 +66,7 @@ type awsWrapper struct {
 	autoScalingI
 	ec2I
 	eksI
+	region string
 }
 
 func (m *awsWrapper) getManagedNodegroupInfo(nodegroupName string, clusterName string) ([]apiv1.Taint, map[string]string, map[string]string, error) {
@@ -75,7 +76,7 @@ func (m *awsWrapper) getManagedNodegroupInfo(nodegroupName string, clusterName s
 	}
 	start := time.Now()
 	r, err := m.DescribeNodegroup(context.Background(), params)
-	observeAWSRequest("DescribeNodegroup", err, start)
+	observeAWSRequest("DescribeNodegroup", err, start, m.region)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -156,7 +157,7 @@ func (m *awsWrapper) getInstanceTypeByLaunchConfigNames(launchConfigToQuery []st
 		}
 		start := time.Now()
 		r, err := m.DescribeLaunchConfigurations(context.Background(), params)
-		observeAWSRequest("DescribeLaunchConfigurations", err, start)
+		observeAWSRequest("DescribeLaunchConfigurations", err, start, m.region)
 		if err != nil {
 			return nil, err
 		}
@@ -196,7 +197,7 @@ func (m *awsWrapper) getAutoscalingGroupsByNames(names []string) ([]autoscalingt
 			}
 			asgs = append(asgs, page.AutoScalingGroups...)
 		}
-		observeAWSRequest("DescribeAutoScalingGroupsPages", err, start)
+		observeAWSRequest("DescribeAutoScalingGroupsPages", err, start, m.region)
 		if err != nil {
 			return nil, err
 		}
@@ -241,7 +242,7 @@ func (m *awsWrapper) getAutoscalingGroupsByTags(tags map[string]string) ([]autos
 		}
 		asgs = append(asgs, page.AutoScalingGroups...)
 	}
-	observeAWSRequest("DescribeAutoScalingGroupsPages", err, start)
+	observeAWSRequest("DescribeAutoScalingGroupsPages", err, start, m.region)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +306,7 @@ func (m *awsWrapper) getLaunchTemplateData(templateName string, templateVersion 
 
 	start := time.Now()
 	describeData, err := m.DescribeLaunchTemplateVersions(context.Background(), describeTemplateInput)
-	observeAWSRequest("DescribeLaunchTemplateVersions", err, start)
+	observeAWSRequest("DescribeLaunchTemplateVersions", err, start, m.region)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +327,7 @@ func (m *awsWrapper) getInstanceTypeFromInstanceRequirements(imageId string, req
 
 	start := time.Now()
 	describeImagesOutput, err := m.DescribeImages(context.Background(), describeImagesInput)
-	observeAWSRequest("DescribeImages", err, start)
+	observeAWSRequest("DescribeImages", err, start, m.region)
 	if err != nil {
 		return "", err
 	}
@@ -356,7 +357,7 @@ func (m *awsWrapper) getInstanceTypeFromInstanceRequirements(imageId string, req
 			instanceTypes = append(instanceTypes, *instanceType.InstanceType)
 		}
 	}
-	observeAWSRequest("GetInstanceTypesFromInstanceRequirements", err, start)
+	observeAWSRequest("GetInstanceTypesFromInstanceRequirements", err, start, m.region)
 	if err != nil {
 		return "", fmt.Errorf("unable to get instance types from requirements: %w", err)
 	}
@@ -758,7 +759,7 @@ func (m *awsWrapper) getInstanceTypesForAsgs(asgs []*asg) (map[string]string, er
 	mixedInstancesPoliciesToQuery := map[string]*mixedInstancesPolicy{}
 
 	for _, asg := range asgs {
-		name := asg.AwsRef.Name
+		name := asg.AwsRef.key()
 		if asg.LaunchConfigurationName != "" {
 			launchConfigsToQuery[name] = asg.LaunchConfigurationName
 		} else if asg.LaunchTemplate != nil {
