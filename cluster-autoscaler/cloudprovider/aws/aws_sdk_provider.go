@@ -40,12 +40,17 @@ import (
 
 // createAWSSDKProvider
 //
-// #1449 If running tests outside of AWS without AWS_REGION among environment
-// variables, avoid a 5+ second EC2 Metadata lookup timeout in getRegion by
+// #1449 If running tests outside of AWS without an explicit region, AWS_REGION,
+// or [Global] Region in cloud config, avoid a 5+ second EC2 Metadata lookup
+// timeout in getRegion by
 // setting and resetting AWS_REGION before calling createAWSSDKProvider:
 //
 // t.Setenv("AWS_REGION", "fanghorn")
 func createAWSSDKProvider(configReader io.Reader) (*awsSDKProvider, error) {
+	return createAWSSDKProviderForRegion(configReader, "")
+}
+
+func createAWSSDKProviderForRegion(configReader io.Reader, region string) (*awsSDKProvider, error) {
 	cloudConfig, err := readAWSCloudConfig(configReader)
 	if err != nil {
 		klog.Errorf("Couldn't read config: %v", err)
@@ -59,7 +64,7 @@ func createAWSSDKProvider(configReader io.Reader) (*awsSDKProvider, error) {
 
 	// Configure all options before building the config
 	loadOpts := []func(*config.LoadOptions) error{
-		config.WithRegion(getRegion()),
+		config.WithRegion(getRegion(region, cloudConfig)),
 		config.WithAPIOptions([]func(*smithymiddleware.Stack) error{
 			// add cluster-autoscaler to the user-agent to make it easier to identify
 			middleware.AddUserAgentKeyValue("cluster-autoscaler", version.ClusterAutoscalerVersion),
@@ -244,7 +249,15 @@ func (r *eksOverrideResolver) ResolveEndpoint(region string, options eks.Endpoin
 }
 
 // getRegion deduces the current AWS Region.
-func getRegion() string {
+func getRegion(explicitRegion string, cloudConfig *aws_config.CloudConfig) string {
+	if explicitRegion != "" {
+		return explicitRegion
+	}
+
+	if cloudConfig != nil && cloudConfig.Global.Region != "" {
+		return cloudConfig.Global.Region
+	}
+
 	region, present := os.LookupEnv("AWS_REGION")
 	if !present {
 		cfg, err := config.LoadDefaultConfig(context.Background())

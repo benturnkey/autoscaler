@@ -417,6 +417,15 @@ func (ng *AwsNodeGroup) TemplateNodeInfo() (*framework.NodeInfo, error) {
 
 // BuildAWS builds AWS cloud provider, manager etc.
 func BuildAWS(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
+	return buildAWS(opts, do, rl, "")
+}
+
+// BuildAWSWithRegion builds AWS cloud provider, manager etc. using an explicit region override.
+func BuildAWSWithRegion(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter, region string) cloudprovider.CloudProvider {
+	return buildAWS(opts, do, rl, region)
+}
+
+func buildAWS(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter, region string) cloudprovider.CloudProvider {
 	var cfg io.ReadCloser
 	if opts.CloudConfig != "" {
 		var err error
@@ -427,7 +436,7 @@ func BuildAWS(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupDis
 		defer cfg.Close()
 	}
 
-	sdkProvider, err := createAWSSDKProvider(cfg)
+	sdkProvider, err := createAWSSDKProviderForRegion(cfg, region)
 	if err != nil {
 		klog.Fatalf("Failed to create AWS SDK Provider: %v", err)
 	}

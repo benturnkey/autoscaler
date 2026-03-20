@@ -33,10 +33,43 @@ import (
 // TestGetRegion ensures correct source supplies AWS Region.
 func TestGetRegionFromEnvironmentVariable(t *testing.T) {
 	key := "AWS_REGION"
-	// Ensure environment variable retains precedence.
 	expected1 := "the-shire-1"
 	t.Setenv(key, expected1)
-	assert.Equal(t, expected1, getRegion())
+	assert.Equal(t, expected1, getRegion("", nil))
+}
+
+func TestGetRegionFromCloudConfig(t *testing.T) {
+	cfg, err := readAWSCloudConfig(strings.NewReader(`
+		[Global]
+		Region=us-west-2
+	`))
+	assert.NoError(t, err)
+
+	assert.Equal(t, "us-west-2", getRegion("", cfg))
+}
+
+func TestGetRegionFromCloudConfigOverridesEnvironmentVariable(t *testing.T) {
+	t.Setenv("AWS_REGION", "the-shire-1")
+
+	cfg, err := readAWSCloudConfig(strings.NewReader(`
+		[Global]
+		Region=us-west-2
+	`))
+	assert.NoError(t, err)
+
+	assert.Equal(t, "us-west-2", getRegion("", cfg))
+}
+
+func TestGetRegionFromExplicitOverride(t *testing.T) {
+	t.Setenv("AWS_REGION", "the-shire-1")
+
+	cfg, err := readAWSCloudConfig(strings.NewReader(`
+		[Global]
+		Region=us-west-2
+	`))
+	assert.NoError(t, err)
+
+	assert.Equal(t, "eu-central-1", getRegion("eu-central-1", cfg))
 }
 
 func TestOverridesActiveConfig(t *testing.T) {

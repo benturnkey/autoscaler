@@ -144,6 +144,21 @@ func TestInstanceTypeFallback(t *testing.T) {
 	_ = BuildAWS(opts, do, resourceLimiter)
 }
 
+func TestInstanceTypeFallbackWithExplicitRegion(t *testing.T) {
+	resourceLimiter := cloudprovider.NewResourceLimiter(
+		map[string]int64{cloudprovider.ResourceNameCores: 1, cloudprovider.ResourceNameMemory: 10000000},
+		map[string]int64{cloudprovider.ResourceNameCores: 10, cloudprovider.ResourceNameMemory: 100000000})
+
+	do := cloudprovider.NodeGroupDiscoveryOptions{}
+	opts := &coreoptions.AutoscalerOptions{}
+
+	t.Setenv("AWS_REGION", "non-existent-region")
+
+	// This test ensures that explicit region override uses the same fallback path
+	// and does not trigger a fatal when instance type enumeration fails.
+	_ = BuildAWSWithRegion(opts, do, resourceLimiter, "another-non-existent-region")
+}
+
 func TestName(t *testing.T) {
 	provider := testProvider(t, testAwsManager)
 	assert.Equal(t, provider.Name(), cloudprovider.AwsProviderName)
